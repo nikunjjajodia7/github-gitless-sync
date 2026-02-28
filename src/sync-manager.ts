@@ -100,7 +100,7 @@ export default class SyncManager {
     );
     // There are files or folders in the vault dir
     return (
-      files.length === 0 ||
+      files.length === 0 &&
       // We filter out the config dir since is always present so it's fine if we find it.
       folders.filter((f) => f !== this.vault.configDir).length === 0
     );
@@ -242,7 +242,7 @@ export default class SyncManager {
         }
 
         if (
-          this.settings.syncConfigDir &&
+          !this.settings.syncConfigDir &&
           targetPath.startsWith(this.vault.configDir) &&
           targetPath !== `${this.vault.configDir}/${MANIFEST_FILE_NAME}`
         ) {
@@ -539,22 +539,18 @@ export default class SyncManager {
 
         // It's not necessary to set conflict resolutions as the content the
         // user expect must be the content of the remote file with no changes.
-        conflictActions = conflictResolutions.map(
-          (resolution: ConflictResolution) => {
-            return { type: "download", filePath: resolution.filePath };
-          },
-        );
+        conflictActions = conflicts.map((conflict: ConflictFile) => {
+          return { type: "download", filePath: conflict.filePath };
+        });
       } else if (this.settings.conflictHandling === "overwriteRemote") {
         // The user explicitly wants to always overwrite the remote file
         // in case of conflicts so we just upload the remote file to solve it.
 
         // It's not necessary to set conflict resolutions as the content the
         // user expect must be the content of the local file with no changes.
-        conflictActions = conflictResolutions.map(
-          (resolution: ConflictResolution) => {
-            return { type: "upload", filePath: resolution.filePath };
-          },
-        );
+        conflictActions = conflicts.map((conflict: ConflictFile) => {
+          return { type: "upload", filePath: conflict.filePath };
+        });
       }
     }
 
@@ -616,9 +612,14 @@ export default class SyncManager {
             // If the file was conflicting we need to read the content from the
             // conflict resolution instead of reading it from file since at this point
             // we still have not updated the local file.
-            const content =
-              resolution?.content ||
-              (await this.vault.adapter.read(normalizedPath));
+            let content = resolution?.content;
+            if (!content) {
+              // Keep binary files out of text read path. commitSync() will upload
+              // the binary blob from readBinary() based on extension checks.
+              content = hasTextExtension(normalizedPath)
+                ? await this.vault.adapter.read(normalizedPath)
+                : "binaryfile";
+            }
             newTreeFiles[action.filePath] = {
               path: action.filePath,
               mode: "100644",
@@ -711,28 +712,54 @@ export default class SyncManager {
       }),
     );
 
+    const conflictPaths = conflicts.filter(
+      (filePath): filePath is string => filePath !== null,
+    );
+    const binaryConflictPaths = conflictPaths.filter(
+      (filePath) => !hasTextExtension(filePath),
+    );
+    if (
+      this.settings.conflictHandling === "ask" &&
+      binaryConflictPaths.length > 0
+    ) {
+      await this.logger.error(
+        "Binary conflicts are not supported in Ask mode. Use overwriteLocal or overwriteRemote.",
+        binaryConflictPaths,
+      );
+      throw new Error(
+        "Binary conflict detected. Set conflict handling to Overwrite local or Overwrite remote and sync again.",
+      );
+    }
+
     return await Promise.all(
-      conflicts
-        .filter((filePath): filePath is string => filePath !== null)
-        .map(async (filePath: string) => {
-          // Load contents in parallel
-          const [remoteContent, localContent] = await Promise.all([
-            await (async () => {
-              const res = await this.client.getBlob({
-                sha: filesMetadata[filePath].sha!,
-                retry: true,
-                maxRetries: 1,
-              });
-              return decodeBase64String(res.content);
-            })(),
-            await this.vault.adapter.read(normalizePath(filePath)),
-          ]);
+      conflictPaths.map(async (filePath: string) => {
+        if (!hasTextExtension(filePath)) {
+          // Binary conflicts are resolved by conflict strategy actions and
+          // don't need text payloads.
           return {
             filePath,
-            remoteContent,
-            localContent,
+            remoteContent: "",
+            localContent: "",
           };
-        }),
+        }
+        // Load contents in parallel
+        const [remoteContent, localContent] = await Promise.all([
+          await (async () => {
+            const res = await this.client.getBlob({
+              sha: filesMetadata[filePath].sha!,
+              retry: true,
+              maxRetries: 1,
+            });
+            return decodeBase64String(res.content);
+          })(),
+          await this.vault.adapter.read(normalizePath(filePath)),
+        ]);
+        return {
+          filePath,
+          remoteContent,
+          localContent,
+        };
+      }),
     );
   }
 

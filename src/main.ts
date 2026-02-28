@@ -103,6 +103,13 @@ export default class GitHubSyncPlugin extends Plugin {
     }
 
     this.app.workspace.onLayoutReady(async () => {
+      if (!this.conflictsResolver && this.conflicts.length === 0) {
+        // Close stale conflict views restored from workspace state.
+        this.app.workspace
+          .getLeavesOfType(CONFLICTS_RESOLUTION_VIEW_TYPE)
+          .forEach((leaf) => leaf.detach());
+      }
+
       // Create the events handling only after tha layout is ready to avoid
       // getting spammed with create events.
       // See the official Obsidian docs:
@@ -270,7 +277,12 @@ export default class GitHubSyncPlugin extends Plugin {
   async onConflicts(conflicts: ConflictFile[]): Promise<ConflictResolution[]> {
     this.conflicts = conflicts;
     return await new Promise(async (resolve) => {
-      this.conflictsResolver = resolve;
+      this.conflictsResolver = (resolutions: ConflictResolution[]) => {
+        // Clear cached conflicts once resolved so manual-opened view
+        // doesn't keep showing stale entries.
+        this.conflicts = [];
+        resolve(resolutions);
+      };
       await this.activateView();
       this.getConflictsView()?.setConflictFiles(conflicts);
     });
