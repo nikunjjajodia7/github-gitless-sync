@@ -71,6 +71,10 @@ export default class EventsListener {
       return;
     }
 
+    if (!this.metadataStore.data.files[filePath]) {
+      // The file is not tracked in metadata, nothing to update.
+      return;
+    }
     this.metadataStore.data.files[filePath].deleted = true;
     this.metadataStore.data.files[filePath].deletedAt = Date.now();
     await this.metadataStore.save();
@@ -99,6 +103,15 @@ export default class EventsListener {
         file.path,
       );
       return;
+    }
+    if (!this.metadataStore.data.files[file.path]) {
+      this.metadataStore.data.files[file.path] = {
+        path: file.path,
+        sha: null,
+        dirty: false,
+        justDownloaded: false,
+        lastModified: 0,
+      };
     }
     this.metadataStore.data.files[file.path].lastModified = Date.now();
     this.metadataStore.data.files[file.path].dirty = true;
@@ -139,6 +152,9 @@ export default class EventsListener {
     if (filePath === `${this.vault.configDir}/${MANIFEST_FILE_NAME}`) {
       // Manifest file must always be synced
       return true;
+    } else if (filePath.endsWith(".DS_Store")) {
+      // Never sync macOS metadata files.
+      return false;
     } else if (
       filePath === `${this.vault.configDir}/workspace.json` ||
       filePath === `${this.vault.configDir}/workspace-mobile.json`

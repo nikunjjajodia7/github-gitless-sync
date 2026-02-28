@@ -1,11 +1,11 @@
 {
-  "id": "github-gitless-sync",
-  "name": "GitHub Gitless Sync",
-  "version": "1.0.7-beta",
+  "id": "github-gitless-sync-enhanced",
+  "name": "GitHub Gitless Sync Enhanced",
+  "version": "1.1.0-beta",
   "minAppVersion": "1.7.7",
-  "description": "Sync a GitHub repository with vaults on different platforms without requiring git installation",
-  "author": "Silvano Cerza",
-  "authorUrl": "https://silvanocerza.com",
+  "description": "Enhanced fork: fixes external file sync, delete propagation, and stability issues for cross-device vault sync",
+  "author": "nikunjjajodia7",
+  "authorUrl": "https://github.com/nikunjjajodia7",
   "fundingUrl": "https://ko-fi.com/silvanocerza",
   "isDesktopOnly": false
 }

@@ -69,6 +69,28 @@ export default class SyncManager {
     );
   }
 
+  private isIgnoredSyncPath(filePath: string): boolean {
+    return (
+      filePath === `${this.vault.configDir}/workspace.json` ||
+      filePath === `${this.vault.configDir}/workspace-mobile.json` ||
+      filePath === `${this.vault.configDir}/${LOG_FILE_NAME}` ||
+      filePath.endsWith(".DS_Store")
+    );
+  }
+
+  private shouldSkipSyncPath(filePath: string): boolean {
+    if (filePath === `${this.vault.configDir}/${MANIFEST_FILE_NAME}`) {
+      return true;
+    }
+    if (this.isIgnoredSyncPath(filePath)) {
+      return true;
+    }
+    if (!this.settings.syncConfigDir && filePath.startsWith(this.vault.configDir)) {
+      return true;
+    }
+    return false;
+  }
+
   /**
    * Returns true if the local vault root is empty.
    */
@@ -261,7 +283,11 @@ export default class SyncManager {
         }
 
         const normalizedPath = normalizePath(targetPath);
-        await this.vault.adapter.writeBinary(normalizedPath, data);
+        const buffer = data.buffer.slice(
+          data.byteOffset,
+          data.byteOffset + data.byteLength,
+        );
+        await this.vault.adapter.writeBinary(normalizedPath, buffer);
         await this.logger.info("Written file", {
           normalizedPath,
         });
@@ -439,6 +465,47 @@ export default class SyncManager {
     const remoteMetadata: Metadata = JSON.parse(
       decodeBase64String(blob.content),
     );
+    if (!remoteMetadata.files) {
+      remoteMetadata.files = {};
+    }
+
+    // Reconcile remote metadata with the actual remote tree state to support
+    // changes made outside of this plugin (PRs/direct commits/other tools).
+    Object.keys(files).forEach((filePath: string) => {
+      if (this.shouldSkipSyncPath(filePath)) {
+        return;
+      }
+      const treeFile = files[filePath];
+      const metadataFile = remoteMetadata.files[filePath];
+      if (metadataFile) {
+        if (metadataFile.sha !== treeFile.sha) {
+          metadataFile.lastModified = Date.now();
+        }
+        metadataFile.sha = treeFile.sha;
+        if (metadataFile.deleted) {
+          metadataFile.deleted = false;
+          delete metadataFile.deletedAt;
+        }
+      } else {
+        remoteMetadata.files[filePath] = {
+          path: filePath,
+          sha: treeFile.sha,
+          dirty: false,
+          justDownloaded: false,
+          lastModified: Date.now(),
+        };
+      }
+    });
+
+    Object.keys(remoteMetadata.files).forEach((filePath: string) => {
+      if (this.shouldSkipSyncPath(filePath)) {
+        return;
+      }
+      if (!files[filePath] && !remoteMetadata.files[filePath].deleted) {
+        remoteMetadata.files[filePath].deleted = true;
+        remoteMetadata.files[filePath].deletedAt = Date.now();
+      }
+    });
 
     const conflicts = await this.findConflicts(remoteMetadata.files);
 
@@ -495,6 +562,20 @@ export default class SyncManager {
       )),
       ...conflictActions,
     ];
+
+    // Add remote files not present in either metadata store.
+    Object.keys(files).forEach((filePath: string) => {
+      if (this.shouldSkipSyncPath(filePath)) {
+        return;
+      }
+      if (
+        !remoteMetadata.files[filePath] &&
+        !this.metadataStore.data.files[filePath] &&
+        !actions.find((action) => action.filePath === filePath)
+      ) {
+        actions.push({ type: "download", filePath });
+      }
+    });
 
     if (actions.length === 0) {
       // Nothing to sync
@@ -561,7 +642,9 @@ export default class SyncManager {
         .map(async (action: SyncAction) => {
           await this.downloadFile(
             files[action.filePath],
-            remoteMetadata.files[action.filePath].lastModified,
+            remoteMetadata.files[action.filePath]
+              ? remoteMetadata.files[action.filePath].lastModified
+              : Date.now(),
           );
         }),
       ...actions
@@ -668,7 +751,8 @@ export default class SyncManager {
     const commonFiles = Object.keys(remoteFiles)
       .filter((filePath) => filePath in localFiles)
       // Remove conflicting files, we determine their actions in a different way
-      .filter((filePath) => !conflictFiles.contains(filePath));
+      .filter((filePath) => !conflictFiles.contains(filePath))
+      .filter((filePath) => !this.isIgnoredSyncPath(filePath));
 
     // Get diff for common files
     await Promise.all(
@@ -686,13 +770,6 @@ export default class SyncManager {
         }
 
         const localSHA = await this.calculateSHA(filePath);
-        if (remoteFile.sha === localSHA) {
-          // If the remote file sha is identical to the actual sha of the local file
-          // there are no actions to take.
-          // We calculate the SHA at the moment instead of using the one stored in the
-          // metadata file cause we update that only when the file is uploaded or downloaded.
-          return;
-        }
 
         if (remoteFile.deleted && !localFile.deleted) {
           if ((remoteFile.deletedAt as number) > localFile.lastModified) {
@@ -724,6 +801,14 @@ export default class SyncManager {
           }
         }
 
+        if (remoteFile.sha === localSHA) {
+          // If the remote file sha is identical to the actual sha of the local file
+          // there are no actions to take.
+          // We calculate the SHA at the moment instead of using the one stored in the
+          // metadata file cause we update that only when the file is uploaded or downloaded.
+          return;
+        }
+
         // For non-deletion cases, if SHAs differ, we just need to check if local changed.
         // Conflicts are already filtered out so we can make this decision easily
         if (localSHA !== localFile.sha) {
@@ -738,6 +823,9 @@ export default class SyncManager {
 
     // Get diff for files in remote but not in local
     Object.keys(remoteFiles).forEach((filePath: string) => {
+      if (this.isIgnoredSyncPath(filePath)) {
+        return;
+      }
       const remoteFile = remoteFiles[filePath];
       const localFile = localFiles[filePath];
       if (localFile) {
@@ -756,6 +844,9 @@ export default class SyncManager {
 
     // Get diff for files in local but not in remote
     Object.keys(localFiles).forEach((filePath: string) => {
+      if (this.isIgnoredSyncPath(filePath)) {
+        return;
+      }
       const remoteFile = remoteFiles[filePath];
       const localFile = localFiles[filePath];
       if (remoteFile) {
@@ -965,6 +1056,19 @@ export default class SyncManager {
   async loadMetadata() {
     await this.logger.info("Loading metadata");
     await this.metadataStore.load();
+    let cleaned = false;
+    Object.keys(this.metadataStore.data.files).forEach((filePath) => {
+      if (
+        filePath.endsWith(".DS_Store") ||
+        filePath === `${this.vault.configDir}/workspace-mobile.json`
+      ) {
+        delete this.metadataStore.data.files[filePath];
+        cleaned = true;
+      }
+    });
+    if (cleaned) {
+      await this.metadataStore.save();
+    }
     if (Object.keys(this.metadataStore.data.files).length === 0) {
       await this.logger.info("Metadata was empty, loading all files");
       let files = [];
@@ -984,7 +1088,11 @@ export default class SyncManager {
         folders.push(...res.folders);
       }
       files.forEach((filePath: string) => {
-        if (filePath === `${this.vault.configDir}/workspace.json`) {
+        if (
+          filePath === `${this.vault.configDir}/workspace.json` ||
+          filePath === `${this.vault.configDir}/workspace-mobile.json` ||
+          filePath.endsWith(".DS_Store")
+        ) {
           // Obsidian recommends not syncing the workspace file
           return;
         }
@@ -1035,6 +1143,13 @@ export default class SyncManager {
     }
     // Add them to the metadata store
     files.forEach((filePath: string) => {
+      if (
+        filePath === `${this.vault.configDir}/workspace.json` ||
+        filePath === `${this.vault.configDir}/workspace-mobile.json` ||
+        filePath.endsWith(".DS_Store")
+      ) {
+        return;
+      }
       this.metadataStore.data.files[filePath] = {
         path: filePath,
         sha: null,

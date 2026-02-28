@@ -122,6 +122,10 @@ export default class GitHubSyncPlugin extends Plugin {
       if (this.settings.showSyncRibbonButton) {
         this.showSyncRibbonIcon();
       }
+
+      if (this.settings.syncOnStartup) {
+        await this.sync();
+      }
     });
 
     this.addCommand({

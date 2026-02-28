@@ -1,6 +1,10 @@
-# GitHub Gitless Sync
+# GitHub Gitless Sync Enhanced
 
 Plugin to sync a GitHub repository with an Obsidian vault.
+
+> Fork notice: this repository is a maintained fork of
+> [silvanocerza/github-gitless-sync](https://github.com/silvanocerza/github-gitless-sync)
+> that focuses on external-change reliability, crash fixes, and cross-device sync stability.
 
 I highly recommend not using this plugin with another sync service.
 This might create problems for this plugin when determining what needs to be synced between remote repository and local vault.
@@ -20,7 +24,8 @@ These are the main features of the plugin:
 
 ## Installation
 
-The plugin is available as a community plugin, you can easily search for it in Obsidian and install it from there.
+The plugin can be installed through BRAT from this repository releases.
+Community-plugin listing can be added separately after review.
 
 ![Obsidian community plugin settings](./assets/install_instructions.png)
 

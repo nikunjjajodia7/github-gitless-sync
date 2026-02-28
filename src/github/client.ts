@@ -73,6 +73,10 @@ export default class GithubClient {
     };
   }
 
+  private shouldStopRetrying(res: { status: number }) {
+    return res.status !== 422 && res.status !== 429 && res.status < 500;
+  }
+
   /**
    * Gets the content of the repo.
    *
@@ -87,12 +91,12 @@ export default class GithubClient {
     const response = await retryUntil(
       async () => {
         return requestUrl({
-          url: `https://api.github.com/repos/${this.settings.githubOwner}/${this.settings.githubRepo}/git/trees/${this.settings.githubBranch}?recursive=1`,
+          url: `https://api.github.com/repos/${this.settings.githubOwner}/${this.settings.githubRepo}/git/trees/${this.settings.githubBranch}?recursive=1&t=${Date.now()}`,
           headers: this.headers(),
           throw: false,
         });
       },
-      (res) => res.status !== 422, // Retry condition: only retry on 422 status
+      (res) => this.shouldStopRetrying(res),
       retry ? maxRetries : 0, // Use 0 retries if retry is false
     );
 
@@ -143,7 +147,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => this.shouldStopRetrying(res),
       retry ? maxRetries : 0,
     );
 
@@ -194,7 +198,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => this.shouldStopRetrying(res),
       retry ? maxRetries : 0,
     );
 
@@ -224,7 +228,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => this.shouldStopRetrying(res),
       retry ? maxRetries : 0,
     );
 
@@ -266,7 +270,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => this.shouldStopRetrying(res),
       retry ? maxRetries : 0,
     );
 
@@ -309,7 +313,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => this.shouldStopRetrying(res),
       retry ? maxRetries : 0,
     );
 
@@ -350,7 +354,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => this.shouldStopRetrying(res),
       retry ? maxRetries : 0,
     );
 
@@ -400,7 +404,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => this.shouldStopRetrying(res),
       retry ? maxRetries : 0,
     );
 
@@ -433,7 +437,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => this.shouldStopRetrying(res),
       retry ? maxRetries : 0,
     );
 
