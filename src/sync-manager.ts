@@ -178,9 +178,13 @@ export default class SyncManager {
     const vaultIsEmpty = await this.vaultIsEmpty();
 
     if (!repositoryIsEmpty && !vaultIsEmpty) {
-      // Both have files, we can't sync, show error
-      await this.logger.error("Both remote and local have files, can't sync");
-      throw new Error("Both remote and local have files, can't sync");
+      // Both sides already contain files, so we skip first-sync bootstrap
+      // and continue with regular incremental sync.
+      await this.logger.info(
+        "Both remote and local have files, falling through to incremental sync",
+      );
+      await this.syncImpl();
+      return;
     } else if (repositoryIsEmpty) {
       // Remote has no files and no manifest, let's just upload whatever we have locally.
       // This is fine even if the vault is empty.
