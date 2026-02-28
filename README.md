@@ -1,4 +1,4 @@
-# GitHub Gitless Sync Enhanced
+# GitHub Sync Pro
 
 Plugin to sync a GitHub repository with an Obsidian vault.
 
@@ -15,12 +15,28 @@ These are the main features of the plugin:
 
 - Desktop and mobile support
 - Doesn't require `git`
+- True two-way sync between local vault and GitHub
+- Handles remote changes made outside the plugin (PRs/direct commits/other tools)
+- Propagates deletes across devices
 - Multiple vaults sync
 - Automatic sync on fixed interval
 - Manual sync
 - Conflict resolution view
 
 - Filtering by file type (TODO 🔨)
+
+## How Sync Works
+
+- Two-way sync: local changes upload to GitHub, remote changes download to local.
+- New files created in one location are synced to the others.
+- Deletions propagate: if a file is deleted and synced on one device, the delete is applied on the others.
+- If the same file is edited on both sides before syncing, conflict handling rules apply.
+
+### Conflict handling
+
+- `Ask`: open conflict view and let you resolve per file.
+- `Overwrite local`: remote wins for conflicting files.
+- `Overwrite remote`: local wins for conflicting files.
 
 ## Installation
 
@@ -42,7 +58,12 @@ Please also provide logs if possible, you can copy them from the settings page. 
 ### First sync
 
 > [!IMPORTANT]
-> The first sync will only work if either the remote repository or the local vault are completely **EMPTY**. If both contain files the first sync will fail.
+> Migration-safe behavior: if both local vault and remote repo already contain files, the plugin now falls back to normal incremental sync instead of failing.
+
+Typical behavior:
+
+- If one side is empty, first sync initializes by copying from the populated side.
+- If both sides have files, first sync falls through to regular sync and computes actions.
 
 You must also configure the plugin settings before syncing.
 
@@ -74,6 +95,12 @@ This will always work even if sync on interval is enabled.
 If you don't want to see the button you can hide it, just check the plugin settings.
 
 The `Sync with GitHub` command is also available.
+
+### What happens on delete
+
+- If you delete a note locally and sync, GitHub is updated.
+- If you delete a note on GitHub and sync on device, local file is deleted.
+- If one side deletes while the other edits, resolution depends on timestamps and conflict settings.
 
 ### Conflict resolution
 
