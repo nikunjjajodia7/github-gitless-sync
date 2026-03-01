@@ -465,8 +465,14 @@ export default class SyncManager {
     const remoteMetadata: Metadata = JSON.parse(
       decodeBase64String(blob.content),
     );
+    let metadataChanged = false;
     if (!remoteMetadata.files) {
       remoteMetadata.files = {};
+    }
+
+    const removedEntries = await this.cleanupUntrackableMetadataEntries();
+    if (removedEntries > 0) {
+      metadataChanged = true;
     }
 
     // Reconcile remote metadata with the actual remote tree state to support
@@ -507,7 +513,13 @@ export default class SyncManager {
       }
     });
 
-    await this.hydrateMissingBaselines(files, remoteMetadata.files);
+    const hydratedEntries = await this.hydrateMissingBaselines(
+      files,
+      remoteMetadata.files,
+    );
+    if (hydratedEntries > 0) {
+      metadataChanged = true;
+    }
 
     const conflicts = await this.findConflicts(remoteMetadata.files);
 
@@ -575,13 +587,6 @@ export default class SyncManager {
       }
     });
 
-    if (actions.length === 0) {
-      // Nothing to sync
-      await this.logger.info("Nothing to sync");
-      return;
-    }
-    await this.logger.info("Actions to sync", actions);
-
     const newTreeFiles: { [key: string]: NewTreeRequestItem } = Object.keys(
       files,
     )
@@ -598,6 +603,20 @@ export default class SyncManager {
         ) => ({ ...acc, [item.path]: item }),
         {},
       );
+
+    if (actions.length === 0) {
+      if (metadataChanged) {
+        await this.logger.info(
+          "No file actions to sync, committing metadata updates only",
+        );
+        await this.commitSync(newTreeFiles, treeSha);
+        return;
+      }
+      // Nothing to sync
+      await this.logger.info("Nothing to sync");
+      return;
+    }
+    await this.logger.info("Actions to sync", actions);
 
     await Promise.all(
       actions.map(async (action) => {
@@ -667,7 +686,7 @@ export default class SyncManager {
   private async hydrateMissingBaselines(
     remoteTreeFiles: { [key: string]: GetTreeResponseItem },
     remoteMetadataFiles: { [key: string]: FileMetadata },
-  ) {
+  ): Promise<number> {
     let hydratedCount = 0;
     const commonFiles = Object.keys(remoteTreeFiles).filter((filePath) => {
       if (this.shouldSkipSyncPath(filePath)) {
@@ -706,6 +725,24 @@ export default class SyncManager {
         count: hydratedCount,
       });
     }
+    return hydratedCount;
+  }
+
+  private async cleanupUntrackableMetadataEntries(): Promise<number> {
+    let removedCount = 0;
+    Object.keys(this.metadataStore.data.files).forEach((filePath) => {
+      if (!this.isTrackablePath(filePath, true)) {
+        delete this.metadataStore.data.files[filePath];
+        removedCount++;
+      }
+    });
+    if (removedCount > 0) {
+      await this.metadataStore.save();
+      await this.logger.info("Removed untrackable metadata entries", {
+        count: removedCount,
+      });
+    }
+    return removedCount;
   }
 
   /**
