@@ -3,6 +3,7 @@ import MetadataStore, { MANIFEST_FILE_NAME } from "./metadata-store";
 import { GitHubSyncSettings } from "./settings/settings";
 import Logger, { LOG_FILE_NAME } from "./logger";
 import GitHubSyncPlugin from "./main";
+import { isTrackableSyncPath } from "./sync-scope";
 
 /**
  * Tracks changes to local sync directory and updates files metadata.
@@ -149,30 +150,13 @@ export default class EventsListener {
   }
 
   private isSyncable(filePath: string) {
-    if (filePath === `${this.vault.configDir}/${MANIFEST_FILE_NAME}`) {
-      // Manifest file must always be synced
-      return true;
-    } else if (filePath.endsWith(".DS_Store")) {
-      // Never sync macOS metadata files.
-      return false;
-    } else if (
-      filePath === `${this.vault.configDir}/workspace.json` ||
-      filePath === `${this.vault.configDir}/workspace-mobile.json`
-    ) {
-      // Obsidian recommends not syncing the workspace files
-      return false;
-    } else if (filePath === `${this.vault.configDir}/${LOG_FILE_NAME}`) {
-      // Don't sync the log file, doesn't make sense
-      return false;
-    } else if (
-      this.settings.syncConfigDir &&
-      filePath.startsWith(this.vault.configDir)
-    ) {
-      // Sync configs only if the user explicitly wants to
-      return true;
-    } else {
-      // All other files can be synced
-      return true;
-    }
+    return isTrackableSyncPath(filePath, {
+      configDir: this.vault.configDir,
+      manifestPath: `${this.vault.configDir}/${MANIFEST_FILE_NAME}`,
+      logPath: `${this.vault.configDir}/${LOG_FILE_NAME}`,
+      syncConfigDir: this.settings.syncConfigDir,
+      syncScopeMode: this.settings.syncScopeMode,
+      includeManifest: true,
+    });
   }
 }

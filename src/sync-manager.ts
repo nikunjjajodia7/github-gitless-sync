@@ -21,6 +21,7 @@ import Logger, { LOG_FILE_NAME } from "./logger";
 import { decodeBase64String, hasTextExtension } from "./utils";
 import GitHubSyncPlugin from "./main";
 import { BlobReader, Entry, Uint8ArrayWriter, ZipReader } from "@zip.js/zip.js";
+import { isTrackableSyncPath } from "./sync-scope";
 
 interface SyncAction {
   type: "upload" | "download" | "delete_local" | "delete_remote";
@@ -69,26 +70,19 @@ export default class SyncManager {
     );
   }
 
-  private isIgnoredSyncPath(filePath: string): boolean {
-    return (
-      filePath === `${this.vault.configDir}/workspace.json` ||
-      filePath === `${this.vault.configDir}/workspace-mobile.json` ||
-      filePath === `${this.vault.configDir}/${LOG_FILE_NAME}` ||
-      filePath.endsWith(".DS_Store")
-    );
+  private isTrackablePath(filePath: string, includeManifest: boolean = false): boolean {
+    return isTrackableSyncPath(filePath, {
+      configDir: this.vault.configDir,
+      manifestPath: `${this.vault.configDir}/${MANIFEST_FILE_NAME}`,
+      logPath: `${this.vault.configDir}/${LOG_FILE_NAME}`,
+      syncConfigDir: this.settings.syncConfigDir,
+      syncScopeMode: this.settings.syncScopeMode,
+      includeManifest,
+    });
   }
 
   private shouldSkipSyncPath(filePath: string): boolean {
-    if (filePath === `${this.vault.configDir}/${MANIFEST_FILE_NAME}`) {
-      return true;
-    }
-    if (this.isIgnoredSyncPath(filePath)) {
-      return true;
-    }
-    if (!this.settings.syncConfigDir && filePath.startsWith(this.vault.configDir)) {
-      return true;
-    }
-    return false;
+    return !this.isTrackablePath(filePath, false);
   }
 
   /**
@@ -241,21 +235,17 @@ export default class SyncManager {
           return;
         }
 
-        if (
-          !this.settings.syncConfigDir &&
-          targetPath.startsWith(this.vault.configDir) &&
-          targetPath !== `${this.vault.configDir}/${MANIFEST_FILE_NAME}`
-        ) {
-          await this.logger.info("Skipped config", { targetPath });
-          return;
-        }
-
         if (entry.directory) {
           const normalizedPath = normalizePath(targetPath);
           await this.vault.adapter.mkdir(normalizedPath);
           await this.logger.info("Created directory", {
             normalizedPath,
           });
+          return;
+        }
+
+        if (this.shouldSkipSyncPath(targetPath)) {
+          await this.logger.info("Skipped non-trackable path", { targetPath });
           return;
         }
 
@@ -326,7 +316,10 @@ export default class SyncManager {
     await Promise.all(
       Object.keys(this.metadataStore.data.files)
         .filter((filePath: string) => {
-          return !Object.keys(files).contains(filePath);
+          return (
+            this.isTrackablePath(filePath, true) &&
+            !Object.keys(files).contains(filePath)
+          );
         })
         .map(async (filePath: string) => {
           const normalizedPath = normalizePath(filePath);
@@ -388,7 +381,10 @@ export default class SyncManager {
           // We should not try to sync deleted files, this can happen when
           // the user renames or deletes files after enabling the plugin but
           // before syncing for the first time
-          return !this.metadataStore.data.files[filePath].deleted;
+          return (
+            this.isTrackablePath(filePath, true) &&
+            !this.metadataStore.data.files[filePath].deleted
+          );
         })
         .map(async (filePath: string) => {
           const normalizedPath = normalizePath(filePath);
@@ -510,6 +506,8 @@ export default class SyncManager {
         remoteMetadata.files[filePath].deletedAt = Date.now();
       }
     });
+
+    await this.hydrateMissingBaselines(files, remoteMetadata.files);
 
     const conflicts = await this.findConflicts(remoteMetadata.files);
 
@@ -663,6 +661,54 @@ export default class SyncManager {
   }
 
   /**
+   * Backfills missing baseline SHAs for files where local and remote content
+   * are already identical. This prevents false conflict detection.
+   */
+  private async hydrateMissingBaselines(
+    remoteTreeFiles: { [key: string]: GetTreeResponseItem },
+    remoteMetadataFiles: { [key: string]: FileMetadata },
+  ) {
+    let hydratedCount = 0;
+    const commonFiles = Object.keys(remoteTreeFiles).filter((filePath) => {
+      if (this.shouldSkipSyncPath(filePath)) {
+        return false;
+      }
+      return filePath in this.metadataStore.data.files;
+    });
+
+    await Promise.all(
+      commonFiles.map(async (filePath: string) => {
+        const localFile = this.metadataStore.data.files[filePath];
+        const remoteMetadataFile = remoteMetadataFiles[filePath];
+        const remoteTreeFile = remoteTreeFiles[filePath];
+        if (!localFile || !remoteTreeFile || !remoteMetadataFile) {
+          return;
+        }
+        if (localFile.deleted || remoteMetadataFile.deleted) {
+          return;
+        }
+        if (localFile.sha !== null) {
+          return;
+        }
+
+        const localSHA = await this.calculateSHA(filePath);
+        if (localSHA !== null && localSHA === remoteTreeFile.sha) {
+          localFile.sha = remoteTreeFile.sha;
+          localFile.dirty = false;
+          hydratedCount++;
+        }
+      }),
+    );
+
+    if (hydratedCount > 0) {
+      await this.metadataStore.save();
+      await this.logger.info("Hydrated missing file baselines", {
+        count: hydratedCount,
+      });
+    }
+  }
+
+  /**
    * Finds conflicts between local and remote files.
    * @param filesMetadata Remote files metadata
    * @returns List of object containing file path, remote and local content of conflicting files
@@ -689,7 +735,14 @@ export default class SyncManager {
         if (remoteFile.deleted && localFile.deleted) {
           return null;
         }
+        if (localFile.sha === null || remoteFile.sha === null) {
+          // Missing baseline means we cannot perform trusted 3-way conflict detection.
+          return null;
+        }
         const actualLocalSHA = await this.calculateSHA(filePath);
+        if (actualLocalSHA === null) {
+          return null;
+        }
         const remoteFileHasBeenModifiedSinceLastSync =
           remoteFile.sha !== localFile.sha;
         const localFileHasBeenModifiedSinceLastSync =
@@ -783,7 +836,7 @@ export default class SyncManager {
       .filter((filePath) => filePath in localFiles)
       // Remove conflicting files, we determine their actions in a different way
       .filter((filePath) => !conflictFiles.contains(filePath))
-      .filter((filePath) => !this.isIgnoredSyncPath(filePath));
+      .filter((filePath) => !this.shouldSkipSyncPath(filePath));
 
     // Get diff for common files
     await Promise.all(
@@ -854,7 +907,7 @@ export default class SyncManager {
 
     // Get diff for files in remote but not in local
     Object.keys(remoteFiles).forEach((filePath: string) => {
-      if (this.isIgnoredSyncPath(filePath)) {
+      if (this.shouldSkipSyncPath(filePath)) {
         return;
       }
       const remoteFile = remoteFiles[filePath];
@@ -875,7 +928,7 @@ export default class SyncManager {
 
     // Get diff for files in local but not in remote
     Object.keys(localFiles).forEach((filePath: string) => {
-      if (this.isIgnoredSyncPath(filePath)) {
+      if (this.shouldSkipSyncPath(filePath)) {
         return;
       }
       const remoteFile = remoteFiles[filePath];
@@ -921,6 +974,22 @@ export default class SyncManager {
     }
     const contentBuffer = await this.vault.adapter.readBinary(filePath);
     const contentBytes = new Uint8Array(contentBuffer);
+    const header = new TextEncoder().encode(`blob ${contentBytes.length}\0`);
+    const store = new Uint8Array([...header, ...contentBytes]);
+    return await crypto.subtle.digest("SHA-1", store).then((hash) =>
+      Array.from(new Uint8Array(hash))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join(""),
+    );
+  }
+
+  /**
+   * Calculates git blob SHA1 from in-memory text content.
+   * This is used for conflict resolutions where uploaded content can differ
+   * from the current on-disk file until sync completes.
+   */
+  async calculateTextSHA(content: string): Promise<string> {
+    const contentBytes = new TextEncoder().encode(content);
     const header = new TextEncoder().encode(`blob ${contentBytes.length}\0`);
     const store = new Uint8Array([...header, ...contentBytes]);
     return await crypto.subtle.digest("SHA-1", store).then((hash) =>
@@ -979,7 +1048,12 @@ export default class SyncManager {
           // to determine the file type, though I feel it's ok to compromise and rely
           // on them if it makes the plugin handle upload better on certain devices.
           if (hasTextExtension(filePath)) {
-            const sha = await this.calculateSHA(filePath);
+            const resolution = conflictResolutions.find(
+              (item) => item.filePath === filePath,
+            );
+            const sha = resolution
+              ? await this.calculateTextSHA(treeFiles[filePath].content!)
+              : await this.calculateSHA(filePath);
             this.metadataStore.data.files[filePath].sha = sha;
             return;
           }
@@ -1089,10 +1163,7 @@ export default class SyncManager {
     await this.metadataStore.load();
     let cleaned = false;
     Object.keys(this.metadataStore.data.files).forEach((filePath) => {
-      if (
-        filePath.endsWith(".DS_Store") ||
-        filePath === `${this.vault.configDir}/workspace-mobile.json`
-      ) {
+      if (!this.isTrackablePath(filePath, true)) {
         delete this.metadataStore.data.files[filePath];
         cleaned = true;
       }
@@ -1119,12 +1190,7 @@ export default class SyncManager {
         folders.push(...res.folders);
       }
       files.forEach((filePath: string) => {
-        if (
-          filePath === `${this.vault.configDir}/workspace.json` ||
-          filePath === `${this.vault.configDir}/workspace-mobile.json` ||
-          filePath.endsWith(".DS_Store")
-        ) {
-          // Obsidian recommends not syncing the workspace file
+        if (!this.isTrackablePath(filePath, false)) {
           return;
         }
 
@@ -1174,11 +1240,7 @@ export default class SyncManager {
     }
     // Add them to the metadata store
     files.forEach((filePath: string) => {
-      if (
-        filePath === `${this.vault.configDir}/workspace.json` ||
-        filePath === `${this.vault.configDir}/workspace-mobile.json` ||
-        filePath.endsWith(".DS_Store")
-      ) {
+      if (!this.isTrackablePath(filePath, false)) {
         return;
       }
       this.metadataStore.data.files[filePath] = {

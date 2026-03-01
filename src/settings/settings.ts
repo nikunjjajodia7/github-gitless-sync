@@ -4,6 +4,7 @@ export interface GitHubSyncSettings {
   githubOwner: string;
   githubRepo: string;
   githubBranch: string;
+  syncScopeMode: "notes-first" | "broad";
   syncStrategy: "manual" | "interval";
   syncInterval: number;
   syncOnStartup: boolean;
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS: GitHubSyncSettings = {
   githubOwner: "",
   githubRepo: "",
   githubBranch: "main",
+  syncScopeMode: "notes-first",
   syncStrategy: "manual",
   syncInterval: 1,
   syncOnStartup: false,
